@@ -18,6 +18,7 @@ package annotations
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/openshift-online/ocm-api-metamodel/pkg/concepts"
 )
@@ -39,15 +40,61 @@ func HTTPName(concept concepts.Annotated) string {
 // JSONName checks if the given concept has a `json` annotation. If it does then it returns the
 // value of the `name` parameter. If it doesn't, it returns an empty string.
 func JSONName(concept concepts.Annotated) string {
+	name := jsonParameter(concept, "name")
+	if name != nil {
+		if n, ok := name.(string); ok {
+			return n
+		}
+	}
+	return ""
+}
+
+func JSONReadOnly(concept concepts.Annotated) bool {
+	readOnly := jsonParameter(concept, "readOnly")
+	if readOnly != nil {
+		if r, ok := readOnly.(bool); ok {
+			return r
+		}
+	}
+	return false
+}
+
+func JSONDefault(concept concepts.Annotated) string {
+	defaultValue := jsonParameter(concept, "default")
+	if defaultValue != nil {
+		if d, ok := defaultValue.(string); ok {
+			return d
+		}
+	}
+	return ""
+}
+
+func JSONRequired(concept concepts.Annotated) bool {
+	required := jsonParameter(concept, "required")
+	if required != nil {
+		if r, ok := required.(bool); ok {
+			return r
+		}
+	}
+	return false
+}
+
+func JSONContext(concept concepts.Annotated) []string {
+	context := jsonParameter(concept, "context")
+	if context != nil {
+		if c, ok := context.(string); ok {
+			return strings.Split(c, ",")
+		}
+	}
+	return []string{}
+}
+
+func jsonParameter(concept concepts.Annotated, paramName string) interface{} {
 	annotation := concept.GetAnnotation("json")
 	if annotation == nil {
-		return ""
+		return nil
 	}
-	name := annotation.FindParameter("name")
-	if name == nil {
-		return ""
-	}
-	return fmt.Sprintf("%s", name)
+	return annotation.FindParameter(paramName)
 }
 
 // GoName checks if the given concept as a `go` annotation. If it has it then it returns the value

@@ -19,11 +19,14 @@ package openapi
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/openshift-online/ocm-api-metamodel/pkg/annotations"
 	"github.com/openshift-online/ocm-api-metamodel/pkg/concepts"
 	"github.com/openshift-online/ocm-api-metamodel/pkg/http"
+	"github.com/openshift-online/ocm-api-metamodel/pkg/names"
 	"github.com/openshift-online/ocm-api-metamodel/pkg/reporter"
 )
 
@@ -35,6 +38,7 @@ type OpenAPIGeneratorBuilder struct {
 	output   string
 	names    *NamesCalculator
 	binding  *http.BindingCalculator
+	context  string
 }
 
 // OpenAPIGenerator generates OpenAPI specifications for the model.
@@ -46,6 +50,7 @@ type OpenAPIGenerator struct {
 	names    *NamesCalculator
 	binding  *http.BindingCalculator
 	buffer   *Buffer
+	context  string
 }
 
 // NewOpenAPIGenerator creates a new builder for OpenAPI specification generators.
@@ -69,6 +74,12 @@ func (b *OpenAPIGeneratorBuilder) Model(value *concepts.Model) *OpenAPIGenerator
 // Output sets the output directory.
 func (b *OpenAPIGeneratorBuilder) Output(value string) *OpenAPIGeneratorBuilder {
 	b.output = value
+	return b
+}
+
+// Output sets the output directory.
+func (b *OpenAPIGeneratorBuilder) Context(value string) *OpenAPIGeneratorBuilder {
+	b.context = value
 	return b
 }
 
@@ -116,6 +127,7 @@ func (b *OpenAPIGeneratorBuilder) Build() (generator *OpenAPIGenerator, err erro
 		output:   b.output,
 		names:    b.names,
 		binding:  b.binding,
+		context:  b.context,
 	}
 
 	return
@@ -128,7 +140,11 @@ func (g *OpenAPIGenerator) Run() error {
 	// Generate the OpenAPI specification type for each version:
 	for _, service := range g.model.Services() {
 		for _, version := range service.Versions() {
+			var err error
 			err = g.generateSpec(version)
+			if g.context != "" {
+				err = g.generateSpecForStruct(version)
+			}
 			if err != nil {
 				return err
 			}
@@ -152,7 +168,7 @@ func (g *OpenAPIGenerator) generateSpec(version *concepts.Version) error {
 	var err error
 
 	// Calculate the file name name:
-	fileName := filepath.Join(g.output, g.names.FileName(version))
+	fileName := filepath.Join(g.output, g.names.FileName(version, g.context))
 
 	// Create the buffer:
 	g.buffer, err = NewBufferBuilder().
@@ -170,13 +186,58 @@ func (g *OpenAPIGenerator) generateSpec(version *concepts.Version) error {
 	return g.buffer.Write()
 }
 
+func (g *OpenAPIGenerator) generateSpecForStruct(version *concepts.Version) error {
+	var err error
+
+	for _, typ := range version.Types() {
+		if typ.IsStruct() {
+			// Skip if the struct is not applicable to the specified context
+			contexts := annotations.JSONContext(typ)
+			if g.context == "" || len(contexts) == 0 || slices.Contains(contexts, g.context) {
+				// Calculate the file name name:
+				fileName := filepath.Join(g.output, g.names.structFileName(version, typ.Name().String(), g.context))
+
+				// Create the buffer:
+				g.buffer, err = NewBufferBuilder().
+					Reporter(g.reporter).
+					Output(fileName).
+					Build()
+				if err != nil {
+					return err
+				}
+
+				// Generate the source:
+				g.generateSpecSourceForStruct(version, typ)
+
+				// Write the generated code:
+				if err := g.buffer.Write(); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (g *OpenAPIGenerator) generateSpecSource(version *concepts.Version) {
 	g.buffer.StartObject()
 	g.buffer.Field("openapi", "3.0.0")
 	g.generateInfo(version)
 	g.generateServers(version)
-	g.generatePaths(version)
-	g.generateComponents(version)
+	g.generatePaths(version, nil)
+	g.generateComponents(version.Types())
+	g.generateSecurity(version)
+	g.buffer.EndObject()
+}
+
+// TODO: refactor
+func (g *OpenAPIGenerator) generateSpecSourceForStruct(version *concepts.Version, typ *concepts.Type) {
+	g.buffer.StartObject()
+	g.buffer.Field("openapi", "3.0.0")
+	g.generateInfo(version)
+	g.generateServers(version)
+	g.generatePaths(version, typ)
+	g.generateComponentsForStruct(typ)
 	g.generateSecurity(version)
 	g.buffer.EndObject()
 }
@@ -214,7 +275,7 @@ func (g *OpenAPIGenerator) generateServers(version *concepts.Version) {
 	g.buffer.EndArray()
 }
 
-func (g *OpenAPIGenerator) generatePaths(version *concepts.Version) {
+func (g *OpenAPIGenerator) generatePaths(version *concepts.Version, typ *concepts.Type) {
 	// Calculate the complete URLs for the paths and sort them alphabetically so the order will
 	// be predictable:
 	index := map[string][]*concepts.Locator{}
@@ -245,10 +306,23 @@ func (g *OpenAPIGenerator) generatePaths(version *concepts.Version) {
 	for _, prefix := range prefixes {
 		path := index[prefix]
 		resource := path[len(path)-1].Target()
-		g.generateResourcePaths(prefix, path, resource)
+		if typ == nil || resourceHasReferenceToType(resource, typ.Name()) {
+			g.generateResourcePaths(prefix, path, resource)
+		}
 	}
 
 	g.buffer.EndObject()
+}
+
+func resourceHasReferenceToType(resource *concepts.Resource, name *names.Name) bool {
+	for _, method := range resource.Methods() {
+		for _, param := range method.Parameters() {
+			if param.Type().Name().Equals(name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (g *OpenAPIGenerator) generateMetadataPath(version *concepts.Version) {
@@ -432,13 +506,13 @@ func (g *OpenAPIGenerator) genrateParameterProperty(parameter *concepts.Paramete
 	g.buffer.EndObject()
 }
 
-func (g *OpenAPIGenerator) generateComponents(version *concepts.Version) {
+func (g *OpenAPIGenerator) generateComponents(typs concepts.TypeSlice) {
 	g.buffer.StartObject("components")
 
 	// Schemas:
 	g.buffer.StartObject("schemas")
 	g.generateMetadataSchema()
-	for _, typ := range version.Types() {
+	for _, typ := range typs {
 		g.generateSchema(typ)
 	}
 	g.generateErrorSchema()
@@ -454,6 +528,34 @@ func (g *OpenAPIGenerator) generateComponents(version *concepts.Version) {
 	g.buffer.EndObject()
 
 	g.buffer.EndObject()
+}
+
+// Generates schema for the Type and any types reference in the attributes
+func (g *OpenAPIGenerator) generateComponentsForStruct(typ *concepts.Type) {
+	componentTypes := &concepts.TypeSlice{}
+
+	// Find dependent types
+	componentTypes.AppendUnique(g.findDepentTypes(typ))
+	g.generateComponents(*componentTypes)
+}
+
+// Return self and attributes of type struct, class and enum
+func (g *OpenAPIGenerator) findDepentTypes(typ *concepts.Type) *concepts.TypeSlice {
+	dependentTypes := &concepts.TypeSlice{}
+	*dependentTypes = append(*dependentTypes, typ)
+
+	for _, attr := range typ.Attributes() {
+		attrType := attr.Type()
+		if attrType.IsList() || attrType.IsMap() {
+			attrType = attrType.Element()
+		}
+		if attrType.IsStruct() || attrType.IsEnum() {
+			attrDTypes := g.findDepentTypes(attrType)
+			dependentTypes.AppendUnique(attrDTypes)
+		}
+	}
+
+	return dependentTypes
 }
 
 func (g *OpenAPIGenerator) generateSchema(typ *concepts.Type) {
@@ -494,46 +596,72 @@ func (g *OpenAPIGenerator) generateEnumSchema(typ *concepts.Type) {
 }
 
 func (g *OpenAPIGenerator) generateStructSchema(typ *concepts.Type) {
-	name := g.names.SchemaName(typ)
-	g.buffer.StartObject(name)
-	g.generateDescription(typ.Doc())
-	g.buffer.StartObject("properties")
-	if typ.IsClass() {
-		// Kind:
-		g.buffer.StartObject("kind")
-		g.generateDescription(fmt.Sprintf(
-			"Indicates the type of this object. Will be '%s' if this is a complete "+
-				"object or '%sLink' if it is just a link.",
-			name, name,
-		))
-		g.buffer.Field("type", "string")
+	contexts := annotations.JSONContext(typ)
+	if g.context == "" || len(contexts) == 0 || slices.Contains(contexts, g.context) {
+		required := []string{}
+		name := g.names.SchemaName(typ)
+		g.buffer.StartObject(name)
+		g.generateDescription(typ.Doc())
+		g.buffer.StartObject("properties")
+		if typ.IsClass() {
+			// Kind:
+			g.buffer.StartObject("kind")
+			g.generateDescription(fmt.Sprintf(
+				"Indicates the type of this object. Will be '%s' if this is a complete "+
+					"object or '%sLink' if it is just a link.",
+				name, name,
+			))
+			g.buffer.Field("type", "string")
+			g.generateReadOnly(true)
+			g.buffer.EndObject()
+
+			// ID:
+			g.buffer.StartObject("id")
+			g.generateDescription("Unique identifier of the object.")
+			g.buffer.Field("type", "string")
+			g.generateReadOnly(true)
+			g.buffer.EndObject()
+
+			// HREF:
+			g.buffer.StartObject("href")
+			g.generateDescription("Self link.")
+			g.buffer.Field("type", "string")
+			g.generateReadOnly(true)
+			g.buffer.EndObject()
+
+			required = append([]string{"id", "kind", "href"}, required...)
+		}
+		for _, attribute := range typ.Attributes() {
+			g.generateStructProperty(attribute)
+			if annotations.JSONRequired(attribute) {
+				required = append(required, attribute.Name().Snake())
+			}
+		}
 		g.buffer.EndObject()
 
-		// ID:
-		g.buffer.StartObject("id")
-		g.generateDescription("Unique identifier of the object.")
-		g.buffer.Field("type", "string")
-		g.buffer.EndObject()
+		if len(required) > 0 {
+			g.buffer.StartArray("required")
+			for _, r := range required {
+				g.buffer.Item(strings.Trim(r, " "))
+			}
+			g.buffer.EndArray()
+		}
 
-		// HREF:
-		g.buffer.StartObject("href")
-		g.generateDescription("Self link.")
-		g.buffer.Field("type", "string")
 		g.buffer.EndObject()
 	}
-	for _, attribute := range typ.Attributes() {
-		g.generateStructProperty(attribute)
-	}
-	g.buffer.EndObject()
-	g.buffer.EndObject()
 }
 
 func (g *OpenAPIGenerator) generateStructProperty(attribute *concepts.Attribute) {
-	name := g.names.AttributePropertyName(attribute)
-	g.buffer.StartObject(name)
-	g.generateDescription(attribute.Doc())
-	g.generateSchemaReference(attribute.Type())
-	g.buffer.EndObject()
+	contexts := annotations.JSONContext(attribute)
+	if g.context == "" || len(contexts) == 0 || slices.Contains(contexts, g.context) {
+		name := g.names.AttributePropertyName(attribute)
+		g.buffer.StartObject(name)
+		g.generateDescription(attribute.Doc())
+		g.generateDefault(annotations.JSONDefault(attribute))
+		g.generateReadOnly(annotations.JSONReadOnly(attribute))
+		g.generateSchemaReference(attribute.Type())
+		g.buffer.EndObject()
+	}
 }
 
 func (g *OpenAPIGenerator) generateSecurity(version *concepts.Version) {
@@ -641,6 +769,18 @@ func (g *OpenAPIGenerator) generateErrorSchema() {
 func (g *OpenAPIGenerator) generateDescription(doc string) {
 	if doc != "" {
 		g.buffer.Field("description", doc)
+	}
+}
+
+func (g *OpenAPIGenerator) generateDefault(value string) {
+	if value != "" {
+		g.buffer.Field("default", value)
+	}
+}
+
+func (g *OpenAPIGenerator) generateReadOnly(readOnly bool) {
+	if readOnly {
+		g.buffer.Field("readOnly", readOnly)
 	}
 }
 

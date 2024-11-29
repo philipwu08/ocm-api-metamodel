@@ -39,8 +39,9 @@ var Cmd = &cobra.Command{
 
 // Values of the command line arguments:
 var args struct {
-	paths  []string
-	output string
+	paths   []string
+	output  string
+	context string
 }
 
 func init() {
@@ -59,6 +60,12 @@ func init() {
 		"output",
 		"",
 		"Directory where the OpenAPI specifications will be generated.",
+	)
+	flags.StringVar(
+		&args.context,
+		"context",
+		"",
+		"Context which OpenAPI specifications will be generated for.",
 	)
 }
 
@@ -121,6 +128,7 @@ func run(cmd *cobra.Command, argv []string) {
 		Output(args.output).
 		Names(openapiCalculator).
 		Binding(bindingCalculator).
+		Context(args.context).
 		Build()
 	if err != nil {
 		reporter.Errorf("Can't create OpenAPI generator: %v", err)

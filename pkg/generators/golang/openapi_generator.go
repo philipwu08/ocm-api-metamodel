@@ -198,7 +198,7 @@ func (g *OpenAPIGenerator) generateSpec(version *concepts.Version, jsonDir strin
 	var err error
 
 	// Read the JSON file that contains the previously generated OpenAPI specification:
-	jsonFile := filepath.Join(jsonDir, g.names.FileName(version))
+	jsonFile := filepath.Join(jsonDir, g.names.FileName(version, ""))
 	jsonData, err := os.ReadFile(jsonFile)
 	if err != nil {
 		return g.reporter.Errorf(

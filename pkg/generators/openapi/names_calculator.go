@@ -69,9 +69,25 @@ func (b *NamesCalculatorBuilder) Build() (calculator *NamesCalculator, err error
 // FileName calculates the relative file path where the specification for the given service version
 // should be written. For example if the service identifier is `clusters_mgmt` and the version
 // identifiers is `v1` then the result will be `clusters_mgmt/v1/openapi.json`.
-func (c *NamesCalculator) FileName(version *concepts.Version) string {
+func (c *NamesCalculator) FileName(version *concepts.Version, context string) string {
 	service := version.Owner()
-	return filepath.Join(service.Name().Snake(), version.Name().Snake(), "openapi.json")
+	fn := "openapi"
+	if context != "" {
+		fn += fmt.Sprintf("_%s", context)
+	}
+	return filepath.Join(service.Name().Snake(), version.Name().Snake(), fmt.Sprintf("%s.json", fn))
+}
+
+func (c *NamesCalculator) structFileName(version *concepts.Version, structName, context string) string {
+	service := version.Owner()
+	fn := "openapi"
+	if structName != "" {
+		fn = fmt.Sprintf("%s_%s", structName, fn)
+	}
+	if context != "" {
+		fn += fmt.Sprintf("_%s", context)
+	}
+	return filepath.Join(service.Name().Snake(), version.Name().Snake(), fmt.Sprintf("%s.json", fn))
 }
 
 // SchemaName calculates the schema name for the given type.

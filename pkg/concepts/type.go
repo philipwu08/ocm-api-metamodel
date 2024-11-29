@@ -247,6 +247,23 @@ func (s TypeSlice) Swap(i, j int) {
 	s[i], s[j] = s[j], s[i]
 }
 
+func (s TypeSlice) Contains(t *Type) bool {
+	for _, typ := range s {
+		if typ.Name().Equals(t.Name()) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *TypeSlice) AppendUnique(t *TypeSlice) {
+	for _, typ := range *t {
+		if !s.Contains(typ) {
+			*s = append(*s, typ)
+		}
+	}
+}
+
 // EnumValue represents each of the values of an enum type.
 type EnumValue struct {
 	documentedSupport
